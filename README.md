@@ -89,36 +89,105 @@ Shell command loop:
 
 ## Installation
 
-### Local install from the repository
+OpenCode Loop can be installed from this GitHub repository as a local OpenCode plugin.
 
-```bash
-git clone https://github.com/ByBrawe/opencode-loop.git
-cd opencode-loop
-```
+OpenCode supports two plugin loading modes:
 
-Windows PowerShell:
+- **Local plugin files** placed in `.opencode/plugins/` or `~/.config/opencode/plugins/`.
+- **npm package plugins** listed in `opencode.json`.
+
+This repository is a GitHub repository, so the recommended installation method is the local plugin install below.
+
+> **Important:** when you use the install script, you do **not** need to add `"plugin": ["opencode-loop"]` to `opencode.json`. The script installs the local plugin file directly into OpenCode's plugin directory.
+
+### Install from GitHub - Windows PowerShell
 
 ```powershell
+git clone https://github.com/ByBrawe/opencode-loop.git
+cd opencode-loop
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-macOS / Linux / Git Bash:
+The installer copies:
 
-```bash
-chmod +x ./scripts/install.sh
-./scripts/install.sh
+```text
+src/index.js        -> %USERPROFILE%\.config\opencode\plugins\opencode-loop.js
+commands\*.md      -> %USERPROFILE%\.config\opencode\commands\
 ```
 
-Restart OpenCode, then run:
+Then restart OpenCode and run:
 
 ```text
 /loop-help
 /loop-doctor
 ```
 
-### Package-based OpenCode config
+### Install from GitHub - macOS / Linux / Git Bash
 
-If you install it as an OpenCode plugin package, add it to your OpenCode config:
+```bash
+git clone https://github.com/ByBrawe/opencode-loop.git
+cd opencode-loop
+chmod +x ./scripts/install.sh
+./scripts/install.sh
+```
+
+The installer copies:
+
+```text
+src/index.js        -> ~/.config/opencode/plugins/opencode-loop.js
+commands/*.md      -> ~/.config/opencode/commands/
+```
+
+Then restart OpenCode and run:
+
+```text
+/loop-help
+/loop-doctor
+```
+
+### Manual global install
+
+Windows PowerShell:
+
+```powershell
+mkdir "$env:USERPROFILE\.config\opencode\plugins" -Force
+mkdir "$env:USERPROFILE\.config\opencode\commands" -Force
+copy .\src\index.js "$env:USERPROFILE\.config\opencode\plugins\opencode-loop.js"
+copy .\commands\*.md "$env:USERPROFILE\.config\opencode\commands\"
+```
+
+macOS / Linux:
+
+```bash
+mkdir -p ~/.config/opencode/plugins ~/.config/opencode/commands
+cp ./src/index.js ~/.config/opencode/plugins/opencode-loop.js
+cp ./commands/*.md ~/.config/opencode/commands/
+```
+
+### Project-local install
+
+Use this when you want the plugin to be available only inside one repository.
+
+```bash
+mkdir -p .opencode/plugins .opencode/commands
+cp ./src/index.js .opencode/plugins/opencode-loop.js
+cp ./commands/*.md .opencode/commands/
+```
+
+On Windows PowerShell:
+
+```powershell
+mkdir .opencode\plugins -Force
+mkdir .opencode\commands -Force
+copy .\src\index.js .opencode\plugins\opencode-loop.js
+copy .\commands\*.md .opencode\commands\
+```
+
+### npm package install - only after npm publishing
+
+Do **not** use this section for a plain GitHub clone.
+
+OpenCode config plugin entries are for npm packages. Use this only if `opencode-loop` has been published to npm, or if you publish your own npm package.
 
 ```json
 {
@@ -127,7 +196,23 @@ If you install it as an OpenCode plugin package, add it to your OpenCode config:
 }
 ```
 
-For local development, the install scripts copy `src/index.js` into your OpenCode plugin directory and the markdown command files into your OpenCode commands directory.
+If the package is not published to npm, this config will not install the GitHub repository. Use the GitHub/local install steps above instead.
+
+### Verify installation
+
+After restarting OpenCode, run:
+
+```text
+/loop-help
+/loop-doctor
+```
+
+If the commands do not appear:
+
+1. Make sure OpenCode was fully restarted.
+2. Check that `opencode-loop.js` exists in the OpenCode plugin directory.
+3. Check that `loop.md`, `loop-help.md`, and the other command files exist in the OpenCode commands directory.
+4. Run `/loop-doctor` if the command is available.
 
 ## Core commands
 

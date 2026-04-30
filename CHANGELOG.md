@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed installation docs for GitHub/local installs.
+- Clarified that `plugin`: [`opencode-loop`] only works after npm publishing.
+- Added manual global install and project-local install instructions.
+- Added verification and troubleshooting steps for `/loop-help` and `/loop-doctor`.
+
 ## 0.4.0
 
 - Public repository metadata updated for `ByBrawe/opencode-loop`.
