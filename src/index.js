@@ -149,7 +149,7 @@ function parseLoopArgs(raw, defaults = {}) {
     } else if (first) {
       const parsedDuration = parseDuration(first)
       if (parsedDuration !== null) intervalMs = parsedDuration
-      else if (intervalMs === null) return { ok: false, error: "Usage: /loop 0s <prompt> | /loop 5m <prompt> | /loop 200m /compact | /loop 10m !npm test | /loop --watch progress.md <prompt>" }
+      else if (intervalMs === null) return { ok: false, error: "Usage: /loop 0s <prompt> | /loop 5m <prompt> | /loop-command 200m /compact | /loop-shell 10m npm test | /loop --watch progress.md <prompt>" }
       else rest = input
     }
   }
@@ -160,6 +160,7 @@ function parseLoopArgs(raw, defaults = {}) {
     id: `${now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
     name: defaults.name,
     action: defaults.action || "",
+    kind: defaults.kind || undefined,
     intervalMs,
     immediate: defaults.immediate ?? true,
     maxRuns: defaults.maxRuns ?? 0,
@@ -218,6 +219,13 @@ function parseLoopArgs(raw, defaults = {}) {
   ;[found, rest] = takeFlag(rest, "--dry-run"); if (found) job.dryRun = true
   ;[found, rest] = takeFlag(rest, "--multi"); if (found) job.multi = true
   ;[found, rest] = takeFlag(rest, "--replace"); if (found) job.multi = false
+  ;[found, rest] = takeFlag(rest, "--prompt"); if (found) job.kind = "prompt"
+  ;[found, rest] = takeFlag(rest, "--ask"); if (found) job.kind = "prompt"
+  ;[found, rest] = takeFlag(rest, "--command"); if (found) job.kind = "command"
+  ;[found, rest] = takeFlag(rest, "--cmd"); if (found) job.kind = "command"
+  ;[found, rest] = takeFlag(rest, "--slash"); if (found) job.kind = "command"
+  ;[found, rest] = takeFlag(rest, "--shell"); if (found) job.kind = "shell"
+  ;[found, rest] = takeFlag(rest, "--compact"); if (found) job.kind = "compact"
 
   ;[value, rest] = takeFlagValue(rest, "--name"); if (value !== undefined) job.name = value.trim()
   ;[value, rest] = takeFlagValue(rest, "--max-runs"); if (value !== undefined) job.maxRuns = parsePositiveInt(value, 0)
@@ -327,6 +335,38 @@ function fireSdk(client, label, method, modernArgs, legacyArgs) {
     .catch((error) => log(client, "warn", `${label} failed`, { error: sdkErrorMessage(error) }))
 }
 
+async function executeTuiCommand(client, command) {
+  if (!client?.tui?.executeCommand) throw new Error("client.tui.executeCommand is not available")
+  return await sdkCall(
+    client.tui.executeCommand.bind(client.tui),
+    { command },
+    { body: { command } },
+  )
+}
+
+function compactTuiCommandName(command = "compact") {
+  const normalized = String(command || "compact").replace(/^\/+/, "").trim().toLowerCase()
+  if (normalized === "compact" || normalized === "summarize") return "session.compact"
+  return undefined
+}
+
+async function compactSession(client, sessionID) {
+  try {
+    await executeTuiCommand(client, "session.compact")
+    return true
+  } catch (error) {
+    await log(client, "warn", "tui session.compact failed", { error: sdkErrorMessage(error) })
+  }
+  try {
+    await sdkCall(client.session.summarize.bind(client.session), { sessionID }, { path: { id: sessionID }, body: {} })
+    return true
+  } catch (error) {
+    await log(client, "warn", "session.summarize fallback failed", { error: sdkErrorMessage(error) })
+  }
+  await toast(client, "Could not run /compact from loop. Check OpenCode version and active TUI session.", "error")
+  return false
+}
+
 async function log(client, level, message, extra) {
   try {
     await sdkCall(
@@ -362,13 +402,17 @@ function wasHandled(sessionID, name, args) {
 }
 
 function commandName(name) { return String(name || "") }
-function isPreset(name) { return ["loop-dev", "loop-testfix", "loop-compact", "loop-progress", "loop-safe-dev"].includes(name) }
+function isPreset(name) { return ["loop-dev", "loop-testfix", "loop-compact", "loop-progress", "loop-safe-dev", "loop-command", "loop-cmd", "loop-prompt", "loop-ask", "loop-shell"].includes(name) }
 function presetDefaults(name, args) {
   const [maybeDuration, rest] = splitFirst(args)
   const parsed = parseDuration(maybeDuration)
   const intervalMs = parsed === null ? 0 : parsed
   const extra = parsed === null ? String(args || "").trim() : rest
-  if (name === "loop-compact") return { intervalMs: intervalMs || parseDuration("200m"), action: extra || "/compact", name: "compact", immediate: false }
+  if (name === "loop-compact") return { intervalMs: intervalMs || parseDuration("200m"), action: extra || "/compact", kind: "compact", name: "compact", immediate: false }
+  if (name === "loop-command" || name === "loop-cmd") return { intervalMs, action: extra, kind: "command", name: "command", immediate: false }
+  if (name === "loop-prompt") return { intervalMs, action: extra, kind: "prompt", name: "prompt", immediate: true }
+  if (name === "loop-ask") return { intervalMs, action: extra, kind: "prompt", name: "ask", immediate: false }
+  if (name === "loop-shell") return { intervalMs, action: extra, kind: "shell", name: "shell", immediate: false }
   if (name === "loop-testfix") return { intervalMs, name: "testfix", safe: true, askNever: true, verifyCommand: extra || "npm test", action: `Run the project tests. Fix failures. Re-run the tests. Test command hint: ${extra || "npm test"}` }
   if (name === "loop-progress") return { intervalMs, name: "progress", safe: true, askNever: true, progressFile: "progress.md", action: extra || "Read progress.md and continue the next unfinished TODO. Mark completed TODOs with [x]. Add useful TODOs when you discover them." }
   if (name === "loop-safe-dev") return { intervalMs, name: "safe-dev", safe: true, askNever: true, noOverlap: true, checkpointOnly: true, batch: 5, progressFile: "progress.md", action: extra || "Develop the project from progress.md. Work in small safe batches. Mark completed TODOs with [x]. Add new ideas to progress.md. Run tests/lint/build if available." }
@@ -377,6 +421,7 @@ function presetDefaults(name, args) {
 
 function jobLabel(job) {
   const title = job.name ? `${job.name}: ` : ""
+  const kind = job.kind ? ` [${job.kind}]` : ""
   const limit = job.maxRuns > 0 ? `, max ${job.maxRuns}` : ""
   const runtime = job.maxRuntimeMs > 0 ? `, runtime ${durationToText(job.maxRuntimeMs)}` : ""
   const timeout = job.timeoutMs > 0 ? `, timeout ${durationToText(job.timeoutMs)}` : ""
@@ -387,7 +432,7 @@ function jobLabel(job) {
   const stopFile = job.stopFile ? ", stop-file" : ""
   const watch = job.watchPaths?.length ? `, watch ${job.watchPaths.join(",")}` : ""
   const paused = job.paused ? ", paused" : ""
-  return `${title}${durationToText(job.intervalMs)} -> ${job.action || `[prompt-file: ${job.promptFile}]`}${limit}${runtime}${timeout}${compact}${verify}${preflight}${failures}${stopFile}${watch}${paused}`
+  return `${title}${durationToText(job.intervalMs)}${kind} -> ${job.action || `[prompt-file: ${job.promptFile}]`}${limit}${runtime}${timeout}${compact}${verify}${preflight}${failures}${stopFile}${watch}${paused}`
 }
 
 function matchJob(job, target, index) {
@@ -448,9 +493,14 @@ function dangerousShell(command) {
   return [/\brm\s+-rf\b/, /\bgit\s+reset\b/, /\bgit\s+clean\b/, /\bgit\s+push\b/, /\bdel\s+\/s\b/, /\brmdir\s+\/s\b/, /\bformat\b/, /\bterraform\s+destroy\b/, /\bkubectl\s+delete\b/, /\bdeploy\b.*\bproduction\b/].some((pattern) => pattern.test(text))
 }
 
-function actionKind(action) {
+function actionKind(action, job = {}) {
   const text = String(action || "").trim()
+  const forced = String(job.kind || "").trim().toLowerCase()
+  if (forced === "compact") return "compact"
   if (text === "/compact" || text === "/summarize") return "compact"
+  if (forced === "prompt" || forced === "ask") return "prompt"
+  if (forced === "command" || forced === "cmd" || forced === "slash") return "command"
+  if (forced === "shell") return "shell"
   if (text.startsWith("/")) return "command"
   if (text.startsWith("!") || text.startsWith("$")) return "shell"
   return "prompt"
@@ -502,11 +552,10 @@ async function maybeCompact(client, sessionID, job) {
   const dueRuns = job.compactEveryRuns > 0 && (job.runCount || 0) > 0 && (job.runCount || 0) % job.compactEveryRuns === 0 && job.lastCompactRunCount !== job.runCount
   const dueTime = job.compactEveryMs > 0 && (!job.lastCompactAt || now() - job.lastCompactAt >= job.compactEveryMs)
   if (!dueRuns && !dueTime) return job
-  try {
-    await sdkCall(client.session.summarize.bind(client.session), { sessionID }, { path: { id: sessionID }, body: {} })
+  if (await compactSession(client, sessionID)) {
     job.lastCompactAt = now()
     job.lastCompactRunCount = job.runCount || 0
-  } catch {}
+  }
   return job
 }
 
@@ -708,18 +757,28 @@ async function finalizeActiveRun(directory, client, sessionID) {
 
 async function fireAction(directory, client, sessionID, job) {
   const action = String(job.action || "").trim()
-  const kind = actionKind(action)
+  const kind = actionKind(action, job)
   if (kind === "compact") {
-    await sdkCall(client.session.summarize.bind(client.session), { sessionID }, { path: { id: sessionID }, body: {} })
-    return { startsAssistantTurn: false }
+    const ok = await compactSession(client, sessionID)
+    return { startsAssistantTurn: ok }
   }
   if (kind === "command") {
-    const [command, argumentsText] = splitFirst(action.slice(1))
-    fireSdk(client, "session.command", client.session.command.bind(client.session), { sessionID, command, arguments: argumentsText }, { path: { id: sessionID }, body: { command, arguments: argumentsText } })
+    const normalized = action.startsWith("/") ? action.slice(1) : action
+    const [command, argumentsText] = splitFirst(normalized)
+    if (!command) {
+      await toast(client, "Loop command action is empty. Example: /loop-command 200m /compact", "warning")
+      return { startsAssistantTurn: false }
+    }
+    const tuiCommand = compactTuiCommandName(command)
+    if (tuiCommand) {
+      await executeTuiCommand(client, tuiCommand)
+      return { startsAssistantTurn: true }
+    }
+    await sdkCall(client.session.command.bind(client.session), { sessionID, command, arguments: argumentsText }, { path: { id: sessionID }, body: { command, arguments: argumentsText } })
     return { startsAssistantTurn: true }
   }
   if (kind === "shell") {
-    const command = action.slice(1).trim()
+    const command = action.replace(/^[!$]\s*/, "").trim()
     if (job.safe && dangerousShell(command)) {
       await toast(client, `Blocked dangerous shell command in safe mode: ${command}`, "error")
       await appendLoopLog(directory, "blocked", { sessionID, job: job.name || job.id, command })
@@ -835,6 +894,7 @@ function sameLoopDefinition(a, b) {
   return (a.name || "") === (b.name || "") &&
     Number(a.intervalMs || 0) === Number(b.intervalMs || 0) &&
     normalizeActionForCompare(a.action) === normalizeActionForCompare(b.action) &&
+    normalizeActionForCompare(a.kind) === normalizeActionForCompare(b.kind) &&
     normalizeActionForCompare(a.promptFile) === normalizeActionForCompare(b.promptFile)
 }
 
@@ -911,9 +971,11 @@ async function helpLoop(client, sessionID) {
   await say(client, sessionID, [
     "OpenCode Loop help:",
     "/loop 0s <prompt>                                Claude Code style auto-continue",
-    "/loop 5m --ask-never --safe <prompt>              interval autonomous loop",
-    "/loop 200m --no-now /compact                      compact/summarize loop",
-    "/loop 10m !npm test                               shell loop",
+    "/loop 5m --ask-never --safe <prompt>              interval autonomous prompt loop",
+    "/loop-command 200m /compact                       OpenCode slash-command loop, waits for idle",
+    "/loop-ask 1h did you run tests and tsc --noEmit?   scheduled question/check prompt",
+    "/loop-shell 10m npm test                           shell loop, waits for idle",
+    "/loop 200m --command /compact                     same as command loop",
     "/loop 0s --verify \"npm test\" <prompt>            verify after each assistant turn",
     "/loop 0s --prompt-file loop-prompt.md             load prompt from a file",
     "/loop 0s --max-runtime 6h --max-failures 3 <task> stop safely after limits",

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.6
+
+- Added clearer README examples for prompt loops, scheduled question loops, OpenCode slash-command loops, shell loops, first-run timing, and idle-safe behavior.
+- Stabilized `/loop-command 200m /compact` by routing `/compact` and `/summarize` through OpenCode TUI compact handling instead of treating them as custom prompt commands.
+- Clarified that command loops wait for idle and should be used for slash commands such as `/compact`.
+- Kept fallback compatibility with older SDK-style calls where possible.
+
+## 0.5.5
+
+- Added explicit loop action types for prompt loops, scheduled question/check loops, OpenCode slash-command loops, and shell-command loops.
+- Added `/loop-command` and `/loop-cmd` for scheduled OpenCode commands such as `/compact`. These wait for the first interval by default and run only when OpenCode is idle.
+- Added `/loop-ask` for recurring check prompts such as “did you run tests, tsc --noEmit, and build?” It waits for the first interval by default.
+- Added `/loop-prompt` to force prompt mode.
+- Added `/loop-shell` for recurring shell commands.
+- Added `/loop` type flags: `--prompt`, `--ask`, `--command`, `--cmd`, `--slash`, `--shell`, and `--compact`.
+- Clarified README examples for scheduled `/compact`, hourly quality checks, and idle-safe timing.
+- Added `publishConfig.access=public` and normalized npm bin paths.
+
 ## 0.5.4
 
 - Fixed compatibility with recent OpenCode SDK/TUI call shapes.

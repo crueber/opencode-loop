@@ -1,6 +1,6 @@
 {
   "name": "@bybrawe/opencode-loop",
-  "version": "0.5.4",
+  "version": "0.5.6",
   "description": "Claude Code style /loop command and background daemon for OpenCode: auto-continue, progress.md TODO automation, compact scheduling, verification, checkpoints, and safe autonomous coding loops.",
   "type": "module",
   "main": "src/index.js",
@@ -57,5 +57,8 @@
   "bin": {
     "opencode-loop": "./scripts/install-node.mjs",
     "opencode-loopd": "./scripts/loopd.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -11,7 +11,7 @@ NPM package name: **@bybrawe/opencode-loop**
 
 ## Current status
 
-**v0.5.4 fixes the recent OpenCode update compatibility issue.** OpenCode Loop has been updated for the current OpenCode SDK/TUI call shape and idle/status behavior. The TUI loop now waits for the session to become idle, debounces idle events, and avoids starting a new run while OpenCode is still busy or queued.
+**v0.5.6 fixes the recent OpenCode update compatibility issue and adds clear loop action types.** OpenCode Loop has been updated for the current OpenCode SDK/TUI call shape and idle/status behavior. The TUI loop waits for the session to become idle, debounces idle events, and avoids starting a new run while OpenCode is still busy or queued. It now separates prompt loops, scheduled question loops, OpenCode slash-command loops, shell loops, and compact loops so commands like `/compact` are not sent as normal chat text.
 
 The known update-related symptoms from older builds are fixed:
 
@@ -19,6 +19,7 @@ The known update-related symptoms from older builds are fixed:
 - a loop job is replaced but does not fire after OpenCode becomes idle
 - repeated `/loop` commands create confusing queued turns
 - prompt, shell, or toast calls silently fail after OpenCode SDK changes
+- `/compact` accidentally being treated as a normal agent prompt
 - intermittent `Tool execution aborted` behavior caused by triggering a new turn too early
 
 The TUI loop is still intentionally session-bound: it runs while OpenCode is open and the current session emits status/idle events. For long-running background work after closing the terminal or OpenCode, use `opencode-loopd`.
@@ -78,7 +79,7 @@ OpenCode Loop is designed for developers searching for:
 - **Failure control** with `--max-failures` and `--pause-on-verify-fail`.
 - **Runtime control** with `--max-runtime 6h`.
 - **Run limit support** with `--max-runs`.
-- **Sleep-before-first-run support** with `--sleep-first`.
+- **Wait-before-first-run support** with `--no-now` for TUI loops and `--sleep-first` for daemon mode.
 - **Checkpoints** with `--checkpoint-only` or `--git-checkpoint`.
 - **Safe mode** with `--safe` and prompt-level destructive command warnings.
 - **Branch setup** with `--branch ai-loop`.
@@ -263,34 +264,92 @@ If the commands do not appear:
 
 ## Quick start
 
+### The 5 examples most people need
+
+Auto-continue every time OpenCode finishes a turn:
+
 ```text
 /loop 0s continue from progress.md and implement the next unfinished TODO
 ```
 
-This is the closest behavior to a Claude Code CLI style loop: every time OpenCode becomes idle, the loop can send the next continuation prompt.
+Run now, then continue every 1 minute when OpenCode is idle:
 
-A safer development loop:
+```text
+/loop 1m continue the project
+```
+
+Wait 1 minute before the first run, then continue every 1 minute when idle:
+
+```text
+/loop 1m --no-now continue the project
+```
+
+Run OpenCode compact every 200 minutes, but only when OpenCode is idle:
+
+```text
+/loop-command 200m /compact
+```
+
+Ask a recurring check question every hour:
+
+```text
+/loop-ask 1h did you run tests, tsc --noEmit, and build? If not, run them and fix any error.
+```
+
+Run a real shell command every 10 minutes when idle:
+
+```text
+/loop-shell 10m npm test
+```
+
+### What “when idle” means
+
+OpenCode Loop is idle-safe. It does **not** intentionally start a new agent turn while OpenCode is already busy.
+
+Example:
+
+```text
+/loop 5m continue the project
+```
+
+If 5 minutes pass while OpenCode is still working, the job becomes due but waits. As soon as OpenCode becomes idle, the loop sends the prompt. This avoids queued turns, aborted tools, and overlapping responses.
+
+### Prompt loops vs command loops
+
+Use a prompt loop when you want to ask or instruct the agent:
+
+```text
+/loop 1h check if tests, tsc --noEmit, and build pass. If not, fix them.
+```
+
+Use a command loop when the action starts with `/` and should be executed as an OpenCode command:
+
+```text
+/loop-command 200m /compact
+```
+
+Do not use this for compacting:
+
+```text
+/loop 200m /compact
+```
+
+That can look like a chat prompt in older versions or unclear setups. Prefer `/loop-command 200m /compact` or the shortcut below:
+
+```text
+/loop-compact 200m
+```
+
+### Safer development loop
 
 ```text
 /loop 0s --name dev --ask-never --safe --no-overlap --batch 5 --compact-every 200m --checkpoint-only --progress-file progress.md Treat progress.md as the main project state file. Continue with the next unfinished TODO, implement it, mark completed items with [x], add useful follow-up TODOs when you discover them, run tests/lint/build when available, and keep going while work remains.
 ```
 
-Periodic compact:
-
-```text
-/loop 200m --name compact --no-now /compact
-```
-
-Test-fix loop:
+### Test-fix loop
 
 ```text
 /loop 0s --name testfix --ask-never --safe --verify "npm test" Continue from progress.md. If tests fail, analyze the failure, fix it, and run the tests again.
-```
-
-Shell command loop:
-
-```text
-/loop 10m --name tests --safe !npm test
 ```
 
 ## Background daemon
@@ -388,7 +447,12 @@ Use `--name` to manage separate named loops, or `--multi` when you intentionally
 
 | Command | Purpose |
 |---|---|
-| `/loop <interval> <action>` | Add an idle/interval loop job |
+| `/loop <interval> <prompt>` | Add an idle/interval prompt loop |
+| `/loop-command <interval> <slash-command>` | Schedule an OpenCode slash command such as `/compact` |
+| `/loop-cmd <interval> <slash-command>` | Alias for `/loop-command` |
+| `/loop-ask <interval> <prompt/question>` | Schedule a recurring question/check prompt; first run waits for the interval by default |
+| `/loop-prompt <interval> <prompt>` | Force prompt mode, even when you want explicit prompt-loop naming |
+| `/loop-shell <interval> <shell-command>` | Schedule a shell command loop |
 | `/loop-help` | Show usage help inside OpenCode |
 | `/loop-status` | Show active loop jobs |
 | `/loop-logs` | Show recent loop log entries |
@@ -422,6 +486,27 @@ Use `--name` to manage separate named loops, or `--multi` when you intentionally
 ```
 
 The plugin is **idle-driven**. It checks jobs when OpenCode becomes idle, so it avoids intentionally starting a second agent turn on top of an active one.
+
+If the interval expires while OpenCode is busy, the loop becomes due and waits. It runs on the next idle event.
+
+## Loop types
+
+OpenCode Loop has separate types for prompts, OpenCode slash commands, and shell commands. This matters because `/compact` should be executed as an OpenCode command, not sent to the agent as text.
+
+| Type | Use | Example | First run |
+|---|---|---|---|
+| Prompt loop | Ask or instruct the agent repeatedly | `/loop 1h check whether tests, tsc --noEmit, and build pass` | Now by default |
+| Scheduled question | Ask/check on a timer | `/loop-ask 1h did you run tests and build?` | After the interval by default |
+| Slash-command loop | Run OpenCode commands like `/compact` | `/loop-command 200m /compact` | After the interval by default |
+| Shell loop | Run real terminal commands | `/loop-shell 10m npm test` | After the interval by default |
+
+You can still force the type on `/loop`:
+
+```text
+/loop 200m --command /compact
+/loop 10m --shell npm test
+/loop 1h --prompt did you run tests, tsc --noEmit, and build?
+```
 
 ## Actions
 
@@ -459,18 +544,40 @@ Do not run destructive commands, force pushes, production deploys, or database r
 
 ### Slash command action
 
+Use `/loop-command` when the action should be executed as an OpenCode command instead of sent to the agent as text.
+
 ```text
-/loop 200m /compact
-/loop 15m /review current changes
+/loop-command 200m /compact
+/loop-command 15m /review current changes
 ```
 
-`/compact` and `/summarize` map to OpenCode session summarization.
+`/compact` and `/summarize` are treated specially and routed to OpenCode's TUI compact action. Custom command templates such as `/review` are routed through OpenCode's session command API. If OpenCode is busy when the interval expires, the command waits and runs when the session becomes idle.
+
+Equivalent forced type on `/loop`:
+
+```text
+/loop 200m --command /compact
+```
+
+For most users, the clearer form is preferred:
+
+```text
+/loop-command 200m /compact
+```
 
 ### Shell action
 
+Use `/loop-shell` for real terminal commands.
+
 ```text
-/loop 10m !npm test
-/loop 30m $pnpm lint
+/loop-shell 10m npm test
+/loop-shell 30m pnpm lint
+```
+
+Equivalent forced type on `/loop`:
+
+```text
+/loop 10m --shell npm test
 ```
 
 Shell actions starting with `!` or `$` run through the OpenCode shell tool.
@@ -692,10 +799,17 @@ Parse and preview a loop without saving it.
 
 ### `--now` and `--no-now`
 
-By default a new loop is due immediately. Use `--no-now` to wait for the first interval.
+By default `/loop` prompt jobs are due immediately. Use `--no-now` to wait for the first interval.
 
 ```text
-/loop 200m --no-now /compact
+/loop 1h --no-now did you run tests, tsc --noEmit, and build?
+```
+
+Command-style shortcuts such as `/loop-command`, `/loop-ask`, and `/loop-shell` wait for the first interval by default. Use `--now` if you want them to run immediately too.
+
+```text
+/loop-command 200m /compact
+/loop-command 200m --now /compact
 ```
 
 ## Recommended recipes
@@ -727,8 +841,18 @@ opencode-loopd --project . --every 5m --prompt-file loop-prompt.md
 ### Compact loop
 
 ```text
-/loop 200m --name compact --no-now /compact
+/loop-command 200m /compact
 ```
+
+This compacts every 200 minutes when OpenCode is idle. It does not interrupt an active agent turn.
+
+### Scheduled quality-check question
+
+```text
+/loop-ask 1h did you run tests, tsc --noEmit, and build? If not, run them now and fix errors.
+```
+
+This asks the agent every hour when idle. If the hour passes while the agent is working, the question waits and is sent after the current turn finishes.
 
 ### Prompt file loop
 
@@ -832,6 +956,21 @@ Improve the application in small safe steps.
 ```
 
 ## Changelog highlights
+
+### v0.5.6
+
+- Added clearer README examples for prompt loops, scheduled question loops, command loops, shell loops, first-run timing, and idle-safe behavior.
+- Stabilized `/loop-command 200m /compact` by routing compact/summarize through OpenCode TUI compact handling instead of treating it as a custom prompt command.
+- Clarified that command loops wait for idle and should be used for slash commands such as `/compact`.
+
+## v0.5.5
+
+- Added explicit loop action types: prompt, scheduled question, OpenCode slash command, and shell command.
+- Added `/loop-command` / `/loop-cmd` for commands such as `/compact`; these wait for the first interval by default.
+- Added `/loop-ask` for recurring checks such as “did you run tests, tsc --noEmit, and build?”; it waits for the first interval by default.
+- Added `/loop-shell` for recurring shell commands.
+- Added `--prompt`, `--ask`, `--command`, `--cmd`, `--slash`, `--shell`, and `--compact` type flags for `/loop`.
+- Clarified idle behavior: if a job becomes due while OpenCode is busy, it waits and runs on the next idle event.
 
 ### v0.5.4
 
