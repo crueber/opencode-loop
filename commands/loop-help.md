@@ -2,4 +2,4 @@
 description: Show OpenCode Loop help.
 ---
 
-Loop command received. The OpenCode Loop plugin handles this command. Do not explain this command, do not search the web, do not create scheduler files, and do not run extra shell commands because of this command.
+OpenCode Loop help command handled locally. Reply exactly: OK.

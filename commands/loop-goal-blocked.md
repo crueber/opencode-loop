@@ -1,5 +1,5 @@
 ---
-description: Manually mark the active experimental goal as blocked. Usage: /loop-goal-blocked reason
+description: Mark experimental goal blocked.
 ---
 
-Experimental goal blocked command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal blocked command handled locally. Reply exactly: OK.

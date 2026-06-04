@@ -6,6 +6,9 @@ const SERVICE = "opencode-loop"
 const STATE_DIR = ".opencode/opencode-loop"
 const DEFAULT_ACTIVE_GUARD_MS = 60_000
 const IDLE_DEBOUNCE_MS = 1_200
+const BUSY_RETRY_MS = 5_000
+const MIN_DUE_TIMER_MS = 250
+const MAX_DUE_TIMER_MS = 2_147_000_000
 const MAX_SCAN_FILES = 200
 const MAX_SCAN_BYTES = 2_000_000
 const GOAL_REPORT_DIR = "goals"
@@ -14,6 +17,7 @@ const GOAL_PROMPT_PREFIX = "EXPERIMENTAL OPENCODE GOAL MODE ITERATION"
 const activeRuns = new Map()
 const handledCommands = new Map()
 const idleTimers = new Map()
+const dueTimers = new Map()
 const sessionStatuses = new Map()
 
 const DEFAULT_PROGRESS_MD = `# Progress
@@ -753,8 +757,9 @@ async function sessionStatusType(client, sessionID) {
       return type
     }
   } catch {}
-  sessionStatuses.set(sessionID, "idle")
-  return "idle"
+  const fallback = activeRuns.has(sessionID) ? "busy" : "idle"
+  sessionStatuses.set(sessionID, fallback)
+  return fallback
 }
 
 async function sessionIsIdle(client, sessionID) {
@@ -768,9 +773,15 @@ function scheduleIdleWork(directory, client, sessionID) {
     idleTimers.delete(sessionID)
     Promise.resolve()
       .then(async () => {
-        if (!await sessionIsIdle(client, sessionID)) return
+        if (!await sessionIsIdle(client, sessionID)) {
+          await scheduleDueWork(directory, client, sessionID, BUSY_RETRY_MS)
+          return
+        }
         await finalizeActiveRun(directory, client, sessionID)
-        if (!await sessionIsIdle(client, sessionID)) return
+        if (!await sessionIsIdle(client, sessionID)) {
+          await scheduleDueWork(directory, client, sessionID, BUSY_RETRY_MS)
+          return
+        }
         await maybeRunDueJobs(directory, client, sessionID)
       })
       .catch((error) => {
@@ -779,6 +790,61 @@ function scheduleIdleWork(directory, client, sessionID) {
       })
   }, IDLE_DEBOUNCE_MS)
   idleTimers.set(sessionID, timer)
+}
+
+function jobDueAt(job, current = now()) {
+  if (isGoalJob(job) && ["completed", "blocked", "cleared"].includes(job.goalStatus)) return Infinity
+  if (!job.enabled || job.paused) return Infinity
+  if (job.maxRuns > 0 && (job.runCount || 0) >= job.maxRuns) return Infinity
+  if (job.watchPaths?.length) return Infinity
+  const created = Date.parse(job.createdAt || new Date().toISOString())
+  if (job.maxRuntimeMs > 0 && current - created >= job.maxRuntimeMs) return current
+  if (job.intervalMs === 0) return current
+  if (!job.lastRunAt) return current
+  return job.lastRunAt + (job.intervalMs || 0)
+}
+
+function nextDueDelay(state) {
+  const current = now()
+  let soonest = Infinity
+  for (const job of state.jobs || []) soonest = Math.min(soonest, jobDueAt(job, current))
+  if (!Number.isFinite(soonest)) return Infinity
+  return Math.max(0, soonest - current)
+}
+
+async function scheduleDueWork(directory, client, sessionID, minDelayMs = 0) {
+  const previous = dueTimers.get(sessionID)
+  if (previous) clearTimeout(previous)
+
+  const state = await readState(directory, sessionID)
+  const delay = nextDueDelay(state)
+  if (!Number.isFinite(delay)) {
+    dueTimers.delete(sessionID)
+    return
+  }
+
+  const wait = Math.min(Math.max(delay, minDelayMs, MIN_DUE_TIMER_MS), MAX_DUE_TIMER_MS)
+  const timer = setTimeout(() => {
+    dueTimers.delete(sessionID)
+    Promise.resolve()
+      .then(async () => {
+        if (!await sessionIsIdle(client, sessionID)) {
+          await scheduleDueWork(directory, client, sessionID, BUSY_RETRY_MS)
+          return
+        }
+        await finalizeActiveRun(directory, client, sessionID)
+        if (!await sessionIsIdle(client, sessionID)) {
+          await scheduleDueWork(directory, client, sessionID, BUSY_RETRY_MS)
+          return
+        }
+        await maybeRunDueJobs(directory, client, sessionID)
+      })
+      .catch((error) => {
+        toast(client, `Loop due timer failed: ${sdkErrorMessage(error)}`, "error").catch(() => {})
+        appendLoopLog(directory, "due-timer-error", { sessionID, error: sdkErrorMessage(error) }).catch(() => {})
+      })
+  }, wait)
+  dueTimers.set(sessionID, timer)
 }
 
 function dueJobs(state, force = false) {
@@ -992,6 +1058,7 @@ async function finalizeActiveRun(directory, client, sessionID) {
   await writeState(directory, sessionID, state)
   if (isGoalJob(job)) await writeGoalReport(directory, sessionID, job)
   await createCheckpoint(directory, sessionID, job, client)
+  await scheduleDueWork(directory, client, sessionID)
 }
 
 async function fireAction(directory, client, sessionID, job) {
@@ -1039,19 +1106,29 @@ ${prompt}` }] } })
 }
 
 async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
+  const reschedule = async (minDelayMs = 0) => { await scheduleDueWork(directory, client, sessionID, minDelayMs) }
+
   if (!await sessionIsIdle(client, sessionID)) {
-    if (options.force) await toast(client, "Loop queued: session is busy; it will run on the next idle event.", "info")
+    if (options.force) await toast(client, "Loop queued: session is busy; it will run on the next idle check.", "info")
+    await reschedule(BUSY_RETRY_MS)
     return
   }
   const active = activeRuns.get(sessionID)
-  if (active && active.job?.noOverlap !== false && now() - active.startedAt < (active.job?.timeoutMs || DEFAULT_ACTIVE_GUARD_MS)) return
+  if (active && active.job?.noOverlap !== false && now() - active.startedAt < (active.job?.timeoutMs || DEFAULT_ACTIVE_GUARD_MS)) {
+    await reschedule(BUSY_RETRY_MS)
+    return
+  }
 
   const state = await readState(directory, sessionID)
   for (const job of state.jobs || []) {
     if (job.watchPaths?.length && !job.paused && job.enabled && await watchChanged(directory, job)) job.lastRunAt = 0
   }
   let due = dueJobs(state, options.force)
-  if (!due.length) { await writeState(directory, sessionID, state); return }
+  if (!due.length) {
+    await writeState(directory, sessionID, state)
+    await reschedule()
+    return
+  }
   let job = due[0]
 
   if (job.maxRuntimeMs > 0 && now() - Date.parse(job.createdAt || new Date().toISOString()) >= job.maxRuntimeMs) {
@@ -1060,6 +1137,7 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
     await notifyJob(directory, job, "max_runtime_reached")
     await toast(client, `Loop stopped by --max-runtime: ${job.name || job.id}`, "success")
     await appendLoopLog(directory, "max-runtime", { sessionID, job: job.name || job.id })
+    await reschedule()
     return
   }
   if (job.stopFile && await pathExists(path.resolve(directory, job.stopFile))) {
@@ -1067,6 +1145,7 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
     await writeState(directory, sessionID, state)
     await notifyJob(directory, job, "stop_file")
     await toast(client, "Loop stopped by --stop-file: " + job.stopFile, "success")
+    await reschedule()
     return
   }
   if (await untilReached(directory, job)) {
@@ -1074,6 +1153,7 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
     await writeState(directory, sessionID, state)
     await notifyJob(directory, job, "until_reached")
     await toast(client, `Loop stopped by --until: ${job.until}`, "success")
+    await reschedule()
     return
   }
 
@@ -1083,6 +1163,7 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
       await writeState(directory, sessionID, state)
       await notifyJob(directory, job, "preflight_blocked")
       await toast(client, "Preflight blocked in safe mode and loop paused: " + job.preflightCommand, "error")
+      await reschedule()
       return
     }
     const preflight = await runShellCommand(job.preflightCommand, directory, job.timeoutMs || 300_000)
@@ -1095,6 +1176,7 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
       await writeState(directory, sessionID, state)
       await notifyJob(directory, job, "preflight_failed")
       await toast(client, "Preflight failed and loop paused: " + job.preflightCommand, "warning")
+      await reschedule()
       return
     }
   }
@@ -1118,16 +1200,18 @@ async function maybeRunDueJobs(directory, client, sessionID, options = {}) {
       const fresh = await readState(directory, sessionID)
       fresh.jobs = (fresh.jobs || []).filter((candidate) => candidate.enabled !== false || isGoalJob(candidate))
       await writeState(directory, sessionID, fresh)
+      await reschedule()
+      return
     }
-    if (result.startsAssistantTurn) {
-      let timer
-      if (job.timeoutMs > 0) timer = setTimeout(() => { fireSdk(client, "session.abort", client.session.abort.bind(client.session), { sessionID }, { path: { id: sessionID }, body: {} }); toast(client, `Loop timeout fired: ${job.name || job.id}`, "warning").catch(() => {}) }, job.timeoutMs)
-      activeRuns.set(sessionID, { jobId: job.id, job, startedAt: now(), timer })
-    }
+    let timer
+    if (job.timeoutMs > 0) timer = setTimeout(() => { fireSdk(client, "session.abort", client.session.abort.bind(client.session), { sessionID }, { path: { id: sessionID }, body: {} }); toast(client, `Loop timeout fired: ${job.name || job.id}`, "warning").catch(() => {}) }, job.timeoutMs)
+    activeRuns.set(sessionID, { jobId: job.id, job, startedAt: now(), timer })
+    await reschedule(BUSY_RETRY_MS)
   } catch (error) {
     clearActiveRun(sessionID)
     await toast(client, `Loop job failed: ${error instanceof Error ? error.message : String(error)}`, "error")
     await appendLoopLog(directory, "error", { sessionID, job: job.name || job.id, error: error instanceof Error ? error.message : String(error) })
+    await reschedule(BUSY_RETRY_MS)
   }
 }
 
@@ -1171,6 +1255,7 @@ async function addLoop(directory, client, sessionID, args, defaults = {}) {
 
   state.jobs.push(parsed.job)
   await writeState(directory, sessionID, state)
+  await scheduleDueWork(directory, client, sessionID)
   if (parsed.job.immediate) scheduleIdleWork(directory, client, sessionID)
   await toast(client, `${replaced ? "Loop replaced" : "Loop added"}: ${jobLabel(parsed.job)}`, "success")
   await appendLoopLog(directory, replaced ? "replace" : "add", { sessionID, job: parsed.job.name || parsed.job.id, label: jobLabel(parsed.job) })
@@ -1178,11 +1263,18 @@ async function addLoop(directory, client, sessionID, args, defaults = {}) {
 
 async function stopLoop(directory, client, sessionID, args) {
   const target = String(args || "").trim()
-  if (!target || target.toLowerCase() === "all") { await removeState(directory, sessionID); clearActiveRun(sessionID); await toast(client, "All loops stopped for this session.", "success"); return }
+  if (!target || target.toLowerCase() === "all") {
+    await removeState(directory, sessionID)
+    clearActiveRun(sessionID)
+    const due = dueTimers.get(sessionID); if (due) clearTimeout(due); dueTimers.delete(sessionID)
+    await toast(client, "All loops stopped for this session.", "success")
+    return
+  }
   const state = await readState(directory, sessionID)
   const before = state.jobs.length
   state.jobs = state.jobs.filter((job, index) => !matchJob(job, target, index))
   await writeState(directory, sessionID, state)
+  await scheduleDueWork(directory, client, sessionID)
   await toast(client, `Stopped ${before - state.jobs.length} loop(s).`, "success")
 }
 
@@ -1192,6 +1284,7 @@ async function updateJobState(directory, client, sessionID, args, updater, messa
   let count = 0
   state.jobs = (state.jobs || []).map((job, index) => matchJob(job, target, index) ? (count++, updater(job)) : job)
   await writeState(directory, sessionID, state)
+  await scheduleDueWork(directory, client, sessionID)
   await toast(client, `${message}: ${count} loop(s).`, count ? "success" : "warning")
 }
 
@@ -1215,6 +1308,7 @@ async function pauseGoal(directory, client, sessionID, args) {
   let count = 0
   state.jobs = (state.jobs || []).map((job, index) => isGoalJob(job) && matchJob(job, target, index) ? (count++, { ...job, paused: true }) : job)
   await writeState(directory, sessionID, state)
+  await scheduleDueWork(directory, client, sessionID)
   await toast(client, `Paused ${count} experimental goal(s).`, count ? "success" : "warning")
 }
 
@@ -1229,7 +1323,10 @@ async function resumeGoal(directory, client, sessionID, args) {
   })
   await writeState(directory, sessionID, state)
   await toast(client, `Resumed ${count} experimental goal(s).`, count ? "success" : "warning")
-  if (count) scheduleIdleWork(directory, client, sessionID)
+  if (count) {
+    await scheduleDueWork(directory, client, sessionID)
+    scheduleIdleWork(directory, client, sessionID)
+  }
 }
 
 async function clearGoal(directory, client, sessionID, args) {
@@ -1238,6 +1335,7 @@ async function clearGoal(directory, client, sessionID, args) {
   const before = state.jobs.length
   state.jobs = (state.jobs || []).filter((job, index) => !isGoalJob(job) || (target && !matchJob(job, target, index)))
   await writeState(directory, sessionID, state)
+  await scheduleDueWork(directory, client, sessionID)
   await toast(client, `Cleared ${before - state.jobs.length} experimental goal(s).`, before !== state.jobs.length ? "success" : "warning")
 }
 

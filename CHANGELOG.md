@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.8
+
+- Added a real due timer for TUI loop jobs, so delayed jobs can wake without waiting for another OpenCode event.
+- Fixed `/loop 1m --no-now ...` style jobs so the first delayed run can fire on time when OpenCode is idle.
+- Fixed scheduled action types such as `/loop-ask`, `/loop-command`, and `/loop-shell` so 0s and delayed jobs are scheduled even when their default mode is `--no-now`.
+- Added busy retry behavior: if a due timer expires while OpenCode is busy, the job waits and retries instead of interrupting the active turn.
+- Reschedules due timers after add, stop, pause, resume, run completion, goal pause/resume/clear, and post-run verification.
+- Shortened command markdown templates so unavoidable custom command turns reply `OK` instead of producing misleading status text.
+- Kept Experimental Goal Mode marked experimental.
+
 ## 0.5.7
 
 - Added experimental Goal Mode with `/loop-goal <objective>`.

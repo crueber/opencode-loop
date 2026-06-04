@@ -1,5 +1,5 @@
 ---
-description: Resume the active experimental goal. Usage: /loop-goal-resume
+description: Resume experimental goal jobs.
 ---
 
-Experimental goal resume command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal resume command handled locally. Reply exactly: OK.

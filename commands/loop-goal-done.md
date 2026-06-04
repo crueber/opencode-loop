@@ -1,5 +1,5 @@
 ---
-description: Manually mark the active experimental goal as done. Usage: /loop-goal-done summary
+description: Mark experimental goal done.
 ---
 
-Experimental goal done command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal done command handled locally. Reply exactly: OK.

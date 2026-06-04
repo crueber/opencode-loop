@@ -1,5 +1,5 @@
 ---
-description: Pause the active experimental goal. Usage: /loop-goal-pause
+description: Pause experimental goal jobs.
 ---
 
-Experimental goal pause command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal pause command handled locally. Reply exactly: OK.

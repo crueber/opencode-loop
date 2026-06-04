@@ -1,5 +1,5 @@
 ---
-description: Show experimental goal status. Usage: /loop-goal-status
+description: Show experimental goal status.
 ---
 
-Experimental goal status command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal status command handled locally. Reply exactly: OK.

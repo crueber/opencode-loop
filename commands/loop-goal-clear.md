@@ -1,5 +1,5 @@
 ---
-description: Clear experimental goal jobs. Usage: /loop-goal-clear
+description: Clear experimental goal jobs.
 ---
 
-Experimental goal clear command received. The OpenCode Loop plugin handles this command locally.
+OpenCode Loop experimental goal clear command handled locally. Reply exactly: OK.

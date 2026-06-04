@@ -11,7 +11,7 @@ NPM package name: **@bybrawe/opencode-loop**
 
 ## Current status
 
-**v0.5.7 adds experimental Goal Mode.** OpenCode Loop still fixes the recent OpenCode update compatibility issue and keeps the clear action types from v0.5.6. The TUI loop waits for the session to become idle, debounces idle events, and avoids starting a new run while OpenCode is still busy or queued. It separates prompt loops, scheduled question loops, OpenCode slash-command loops, shell loops, compact loops, and now experimental persistent goals so commands like `/compact` are not sent as normal chat text.
+**v0.5.8 is a reliability hotfix for the new loop types and Experimental Goal Mode.** It adds a real due timer in addition to OpenCode idle/status events, so delayed jobs such as `/loop 1m --no-now ...`, `/loop-command 1m --no-now /compact`, `/loop-ask 1h ...`, and `/loop-shell 10m ...` do not depend on another user action to wake the scheduler. The TUI loop still waits for the session to become idle before starting work, debounces idle events, and avoids starting a new run while OpenCode is busy or queued.
 
 The known update-related symptoms from older builds are fixed:
 
@@ -22,8 +22,59 @@ The known update-related symptoms from older builds are fixed:
 - `/compact` accidentally being treated as a normal agent prompt
 - intermittent `Tool execution aborted` behavior caused by triggering a new turn too early
 - experimental `/loop-goal` support for goal-driven work that continues until complete, blocked, paused, or cleared
+- `--no-now` interval jobs not waking until another OpenCode event happens
+- `/loop-ask`, `/loop-command`, and `/loop-shell` being configured but not reliably firing on their own
 
 The TUI loop is still intentionally session-bound: it runs while OpenCode is open and the current session emits status/idle events. For long-running background work after closing the terminal or OpenCode, use `opencode-loopd`.
+
+## v0.5.8 quick behavior guide
+
+OpenCode Loop has two triggers now:
+
+1. **Idle/status events** from OpenCode. These are used when OpenCode finishes a turn.
+2. **A real due timer** inside the plugin. This wakes delayed jobs even when no new OpenCode event happens.
+
+All TUI jobs are still idle-safe. If the timer expires while OpenCode is busy, the job does not interrupt the active turn. It waits and retries until the session becomes idle.
+
+Simple examples:
+
+```text
+/loop 0s continue the project
+```
+
+Run every time OpenCode becomes idle.
+
+```text
+/loop 1m --no-now continue the project
+```
+
+Wait 1 minute first, then run when OpenCode is idle.
+
+```text
+/loop-command 200m /compact
+```
+
+Run OpenCode compact about every 200 minutes, but only when OpenCode is idle.
+
+```text
+/loop-ask 1h did you run tests, tsc --noEmit, and build? If not, run them and fix errors.
+```
+
+Ask a recurring quality-control question every hour.
+
+```text
+/loop-shell 10m npm test
+```
+
+Run a shell command every 10 minutes when idle.
+
+```text
+/loop-goal --max-turns 5 --check "npm run build" --complete-when-checks-pass make the project build cleanly
+```
+
+Experimental persistent goal mode: keep working until the goal is complete, blocked, paused, cleared, or a safety limit is reached.
+
+> Note: OpenCode custom command markdown still creates a tiny assistant turn for slash commands. v0.5.8 keeps these command templates short and asks the model to reply `OK`. The actual loop scheduling is handled locally by the plugin.
 
 ## Why this exists
 
