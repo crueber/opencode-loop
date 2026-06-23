@@ -54,6 +54,9 @@
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.4.0"
   },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.0"
+  },
   "bin": {
     "opencode-loop": "./scripts/install-node.mjs",
     "opencode-loopd": "./scripts/loopd.mjs"
